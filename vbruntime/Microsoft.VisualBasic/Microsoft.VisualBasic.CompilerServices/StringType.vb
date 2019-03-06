@@ -1,295 +1,863 @@
-'
-' StringType.vb
-'
-' Author:
-'   Miguel de Icaza (miguel@novell.com)
-'   Mizrahi Rafael (rafim@mainsoft.com)
-'   Boris Kirzner (borisk@mainsoft.com)
-'
-
-'
-' Copyright (C) 2002-2006 Mainsoft Corporation.
-' Copyright (C) 2004-2006 Novell, Inc (http://www.novell.com)
-'
-' Permission is hereby granted, free of charge, to any person obtaining
-' a copy of this software and associated documentation files (the
-' "Software"), to deal in the Software without restriction, including
-' without limitation the rights to use, copy, modify, merge, publish,
-' distribute, sublicense, and/or sell copies of the Software, and to
-' permit persons to whom the Software is furnished to do so, subject to
-' the following conditions:
-' 
-' The above copyright notice and this permission notice shall be
-' included in all copies or substantial portions of the Software.
-' 
-' THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-' EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-' MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-' NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-' LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-' OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-' WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
-'
-' Based on the requirements to run the tests in mbas/Test/tests/expressions
-'
-'
+' Copyright (c) Microsoft Corporation.  All rights reserved.
 
 Imports System
+Imports System.Globalization
 Imports System.Text
-Imports System.Text.RegularExpressions
+
+Imports Microsoft.VisualBasic.CompilerServices.ExceptionUtils
+Imports Microsoft.VisualBasic.CompilerServices.Utils
 
 Namespace Microsoft.VisualBasic.CompilerServices
-    <System.ComponentModel.EditorBrowsable(ComponentModel.EditorBrowsableState.Never)> _
-    Public NotInheritable Class StringType
 
+#Region " BACKWARDS COMPATIBILITY "
+
+    'WARNING WARNING WARNING WARNING WARNING
+    'This code exists to support Everett compiled applications.  Make sure you understand
+    'the backwards compatibility ramifications of any edit you make in this region.
+    'WARNING WARNING WARNING WARNING WARNING
+
+    <System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)> _
+    Public NotInheritable Class StringType
+        ' Prevent creation.
         Private Sub New()
-            'Nobody should see constructor
         End Sub
 
+        Private Const GENERAL_FORMAT As String = "G"
+
+        '============================================================================
+        ' Coercion to functions.
+        '============================================================================
         Public Shared Function FromBoolean(ByVal Value As Boolean) As String
             If Value Then
-                Return "True"
+                Return System.Boolean.TrueString
             Else
-                Return "False"
+                Return System.Boolean.FalseString
             End If
+        End Function
+
+        Public Shared Function FromByte(ByVal Value As Byte) As String
+            Return Value.ToString(Nothing, Nothing)
         End Function
 
         Public Shared Function FromChar(ByVal Value As Char) As String
-            Return Value.ToString
+            Return Value.ToString()
+        End Function
+
+        Public Shared Function FromShort(ByVal Value As Short) As String
+            Return Value.ToString(Nothing, Nothing)
         End Function
 
         Public Shared Function FromInteger(ByVal Value As Integer) As String
-            Return Value.ToString()
+            Return Value.ToString(Nothing, Nothing)
         End Function
+
+        Public Shared Function FromLong(ByVal Value As Long) As String
+            Return Value.ToString(Nothing, Nothing)
+        End Function
+
+        Public Shared Function FromSingle(ByVal Value As Single) As String
+            Return FromSingle(Value, Nothing)
+        End Function
+
+        Public Shared Function FromDouble(ByVal Value As Double) As String
+            Return FromDouble(Value, Nothing)
+        End Function
+
+        'Change to this code after the NDP drop includes the formatting changes
+        Public Shared Function FromSingle(ByVal Value As Single, ByVal NumberFormat As NumberFormatInfo) As String
+            Return Value.ToString(Nothing, NumberFormat)
+        End Function
+
+        Public Shared Function FromDouble(ByVal Value As Double, ByVal NumberFormat As NumberFormatInfo) As String
+            Return Value.ToString("G", NumberFormat)
+        End Function
+
+#If CHANGE_TO_NDP_GENERAL_FORMAT Then
+
+    Public Shared Function FromDate(ByVal Value As DateTime) As String
+        Return Value.ToString(Nothing, Nothing)
+    End Function
+
+#Else
+        Public Shared Function FromDate(ByVal Value As Date) As String
+            Dim TimeTicks As Long = Value.TimeOfDay.Ticks
+
+            If (TimeTicks = Value.Ticks) OrElse _
+                (Value.Year = 1899 AndAlso Value.Month = 12 AndAlso Value.Day = 30) Then 'OA Date with no date is 1899-12-30
+                'No date (1/1/1)
+                'UNDONE: REVIEW OA DATE HACK
+                Return Value.ToString("T", Nothing)
+            ElseIf TimeTicks = 0 Then
+                'No time, or is midnight
+                Return Value.ToString("d", Nothing)
+            Else
+                Return Value.ToString(GENERAL_FORMAT, Nothing)
+            End If
+        End Function
+#End If
 
         Public Shared Function FromDecimal(ByVal Value As Decimal) As String
-            Return Value.ToString()
+            Return FromDecimal(Value, Nothing)
         End Function
 
-        Public Shared Function FromDecimal(ByVal Value As Decimal, ByVal NumberFormat As System.Globalization.NumberFormatInfo) As String
-            Return Value.ToString(NumberFormat)
+        Public Shared Function FromDecimal(ByVal Value As Decimal, ByVal NumberFormat As NumberFormatInfo) As String
+            Return Value.ToString("G", NumberFormat)
         End Function
 
         Public Shared Function FromObject(ByVal Value As Object) As String
+
             If Value Is Nothing Then
                 Return Nothing
+
+            Else
+                Dim StringValue As String = TryCast(Value, String)
+
+                If StringValue IsNot Nothing Then
+                    Return StringValue
+                End If
             End If
 
-            Dim type1 As Type = Value.GetType()
-            Select Case Type.GetTypeCode(type1)
-                Case TypeCode.Boolean
-                    Return Convert.ToString(DirectCast(Value, Boolean))
-                Case TypeCode.Byte
-                    Return Convert.ToString(DirectCast(Value, Byte))
-                Case TypeCode.Char
-                    Return Convert.ToString(DirectCast(Value, Char))
-                Case TypeCode.DateTime
-                    ' Return StringType.FromDate(DirectCast(Value, Date))
-                    Return StringType.FromDate(DateType.FromObject(Value))
-                Case TypeCode.Double
-                    Return Convert.ToString(DirectCast(Value, Double))
-                Case TypeCode.Decimal
-                    Return Convert.ToString(DirectCast(Value, Decimal))
-                Case TypeCode.Int32
-                    Return Convert.ToString(DirectCast(Value, Integer))
-                Case TypeCode.Int16
-                    Return Convert.ToString(DirectCast(Value, Short))
-                Case TypeCode.Int64
-                    Return Convert.ToString(DirectCast(Value, Long))
-                Case TypeCode.Single
-                    Return Convert.ToString(DirectCast(Value, Single))
-                Case TypeCode.String
-                    ' do nothing.
-                    Return Value.ToString()
-#If TARGET_JVM Then 'These cases are always relevant, however because of a bug in the vbc it is only compiled for jvm
-                Case TypeCode.SByte
-                    Return Convert.ToString(DirectCast(Value, SByte))
-                Case TypeCode.UInt32
-                    Return Convert.ToString(DirectCast(Value, UInteger))
-                Case TypeCode.UInt16
-                    Return Convert.ToString(DirectCast(Value, UShort))
-                Case TypeCode.UInt64
-                    Return Convert.ToString(DirectCast(Value, ULong))
-                Case TypeCode.DBNull
-                    Return Convert.ToString(DirectCast(Value, DBNull))
-#End If
-                Case Else 'TypeCode.Object and other
-                    Throw New InvalidCastException
-            End Select
+            Dim ValueInterface As IConvertible
+            Dim ValueTypeCode As TypeCode
+
+            ValueInterface = TryCast(Value, IConvertible)
+
+            If Not ValueInterface Is Nothing Then
+
+                ValueTypeCode = ValueInterface.GetTypeCode()
+
+                Select Case ValueTypeCode
+                    Case TypeCode.Boolean
+                        Return FromBoolean(ValueInterface.ToBoolean(Nothing))
+
+                    Case TypeCode.Byte
+                        Return FromByte(ValueInterface.ToByte(Nothing))
+
+                    Case TypeCode.Int16
+                        Return FromShort(ValueInterface.ToInt16(Nothing))
+
+                    Case TypeCode.Int32
+                        Return FromInteger(ValueInterface.ToInt32(Nothing))
+
+                    Case TypeCode.Int64
+                        Return FromLong(ValueInterface.ToInt64(Nothing))
+
+                    Case TypeCode.Single
+                        Return FromSingle(ValueInterface.ToSingle(Nothing))
+
+                    Case TypeCode.Double
+                        Return FromDouble(ValueInterface.ToDouble(Nothing))
+
+                    Case TypeCode.Decimal
+                        Return FromDecimal(ValueInterface.ToDecimal(Nothing))
+
+                    Case TypeCode.String
+                        Return ValueInterface.ToString(Nothing)
+
+                    Case TypeCode.Char
+                        Return FromChar(ValueInterface.ToChar(Nothing))
+
+                    Case TypeCode.DateTime
+                        Return FromDate(ValueInterface.ToDateTime(Nothing))
+
+                    Case Else
+                        ' Fall through to error
+                End Select
+
+            Else
+                Dim CharArray As Char() = TryCast(Value, Char())
+
+                If CharArray IsNot Nothing AndAlso CharArray.Rank = 1 Then
+                    Return New String(CharArrayType.FromObject(Value))
+                End If
+            End If
+
+            Throw New InvalidCastException(string.Format("Conversion from type '{0}' to type '{1}' is not valid.", Value, "String"))
+
         End Function
 
-        Public Shared Function FromDouble(ByVal value As Double) As String
-            Return value.ToString()
-        End Function
+        '============================================================================
+        ' Compare/concat/len functions.
+        '============================================================================
+        Public Shared Function StrCmp(ByVal sLeft As String, ByVal sRight As String, ByVal TextCompare As Boolean) As Integer
 
-        Public Shared Function FromDouble(ByVal Value As Double, ByVal NumberFormat As System.Globalization.NumberFormatInfo) As String
-            Return Value.ToString(NumberFormat)
-        End Function
-
-        Public Shared Function FromByte(ByVal value As Byte) As String
-            Return value.ToString()
-        End Function
-
-        Public Shared Function FromSingle(ByVal value As Single) As String
-            Return value.ToString()
-        End Function
-
-        Public Shared Function FromSingle(ByVal Value As Single, ByVal NumberFormat As System.Globalization.NumberFormatInfo) As String
-            Return Value.ToString(NumberFormat)
-        End Function
-
-        Public Shared Function FromLong(ByVal value As Long) As String
-            Return value.ToString()
-        End Function
-
-        Public Shared Function FromShort(ByVal value As Short) As String
-            Return value.ToString()
-        End Function
-
-        Public Shared Function StrCmp(ByVal sLeft As String, ByVal sRight As String, ByVal textCompare As Boolean) As Integer
-#If TRACE Then
-            System.Console.WriteLine("TRACE:StringType.StrCmp: {0} {1}", sLeft, sRight)
-#End If
+            If sLeft Is sRight Then
+                Return 0
+            End If
 
             If sLeft Is Nothing Then
-                sLeft = ""
+                If sRight.Length() = 0 Then
+                    Return 0
+                End If
+
+                Return -1
             End If
 
             If sRight Is Nothing Then
-                sRight = ""
-            End If
-
-            If textCompare Then
-                Return sLeft.CompareTo(sRight)
-            Else
-                Return String.CompareOrdinal(sLeft, sRight)
-            End If
-        End Function
-
-        Public Shared Function FromDate(ByVal value As DateTime) As String
-#If TRACE Then
-            System.Console.WriteLine("TRACE:StringType.FromDate:input:" + value.ToString())
-            System.Console.WriteLine("TRACE:StringType.FromDate:output:" + Convert.ToString(value))
-#End If
-            ' Convert.ToString(value) return a Date and Time
-            ' If the input DateTime value contains just date or just time,
-            ' the returned string should contain just date or just time.
-            ' 
-#If TRACE Then
-            System.Console.WriteLine("TRACE:StringType.FromDate:value.Hour:" + value.Hour.ToString())
-#End If
-            'value is just a date
-            If ((value.Hour = 0) And (value.Minute = 0) And (value.Millisecond = 0)) Then
-                Return value.ToShortDateString
-            End If
-
-            'value is just a time
-            If ((value.Year = 0) And (value.Month = 0) And (value.Day = 0)) Then
-                Return value.ToShortTimeString
-            End If
-
-            'this is a date and a time
-            Return value.ToString()
-
-        End Function
-        Public Shared Sub MidStmtStr(ByRef sDest As String, ByVal StartPosition As Integer, ByVal MaxInsertLength As Integer, ByVal sInsert As String)
-            Dim destLen As Integer = sDest.Length
-            Dim LenToInsert As Integer
-
-            If MaxInsertLength > sInsert.Length Then
-                LenToInsert = sInsert.Length
-            ElseIf MaxInsertLength > (destLen - StartPosition) Then
-                LenToInsert = ((destLen - StartPosition) + 1)
-            Else
-                LenToInsert = MaxInsertLength
-            End If
-
-            sDest = sDest.Remove(StartPosition - 1, LenToInsert)
-            sDest = sDest.Insert(StartPosition - 1, sInsert.Substring(0, LenToInsert))
-
-        End Sub
-        Public Shared Function StrLike(ByVal Source As String, ByVal Pattern As String, ByVal CompareOption As Microsoft.VisualBasic.CompareMethod) As Boolean
-
-            If (Source Is Nothing OrElse Source.Length = 0) AndAlso (Pattern Is Nothing OrElse Pattern.Length = 0) Then
-                Return True
-                ' LAMESPEC : MSDN states "if either string or pattern is an empty string, the result is False."
-                ' but "" Like "[]" returns True
-            ElseIf ((Source Is Nothing OrElse Source.Length = 0) OrElse (Pattern Is Nothing OrElse Pattern.Length = 0)) AndAlso String.Compare(Pattern, "[]") <> 0 Then
-                Return False
-            End If
-
-            Dim options As RegexOptions = RegexOptions.Singleline
-            If CompareOption = CompareMethod.Text Then
-                options = options Or RegexOptions.CultureInvariant Or RegexOptions.IgnoreCase
-            End If
-
-            Dim regexString As String = ConvertLikeExpression(Pattern)
-            Dim regexpr As Regex = New Regex(regexString, options)
-
-            'Console.WriteLine("{0} --> {1}", Pattern, regexString)
-
-            Return regexpr.IsMatch(Source)
-
-        End Function
-
-        Private Shared Function ConvertLikeExpression(ByVal expression As String) As String
-            Dim sb As StringBuilder = New StringBuilder
-
-            sb.Append("^")
-
-            For pos As Integer = 0 To expression.Length - 1
-                Select Case expression(pos)
-                    Case "?"c
-                        sb.Append("."c)
-                    Case "*"c
-                        sb.Append("."c).Append("*"c)
-                    Case "#"c
-                        sb.Append("\d{1}")
-                    Case "["c
-                        Dim gsb As StringBuilder = ConvertGroupSubexpression(expression, pos)
-                        ' skip groups of form [], i.e. empty strings
-                        If gsb.Length > 2 Then
-                            sb.Append(gsb)
-                        End If
-                    Case Else
-                        sb.Append(Regex.Escape(expression(pos).ToString()))
-                End Select
-            Next
-
-            sb.Append("$")
-
-            Return sb.ToString()
-        End Function
-
-        Private Shared Function ConvertGroupSubexpression(ByVal carr As String, ByRef pos As Integer) As StringBuilder
-            Dim sb As StringBuilder = New StringBuilder
-            Dim negate As Boolean = False
-
-            While Not carr(pos) = "]"c
-                If negate Then
-                    sb.Append("^"c)
-                    negate = False
+                If sLeft.Length() = 0 Then
+                    Return 0
                 End If
-                If carr(pos) = "!"c Then
-                    sb.Remove(1, sb.Length - 1)
-                    negate = True
-                Else
-                    sb.Append(carr(pos))
-                End If
-                pos = pos + 1
-            End While
-            sb.Append("]"c)
 
-            Return sb
+                Return 1
+            End If
+
+            If TextCompare Then
+                Return System.Threading.Thread.CurrentThread.CurrentCulture.CompareInfo.Compare(sLeft, sRight, (CompareOptions.IgnoreCase Or CompareOptions.IgnoreWidth Or CompareOptions.IgnoreKanaType))
+            Else
+                Return System.String.CompareOrdinal(sLeft, sRight)
+            End If
+
+        End Function
+
+#Region " BACKWARDS COMPATIBILITY "
+
+        'WARNING WARNING WARNING WARNING WARNING
+        'This code exists to support Everett compiled applications.  Make sure you understand
+        'the backwards compatibility ramifications of any edit you make in this region.
+        'WARNING WARNING WARNING WARNING WARNING
+
+        Public Shared Function StrLike(ByVal Source As String, ByVal Pattern As String, ByVal CompareOption As CompareMethod) As Boolean
+            If CompareOption = CompareMethod.Binary Then
+                Return StrLikeBinary(Source, Pattern)
+            Else
+                Return StrLikeText(Source, Pattern)
+            End If
         End Function
 
         Public Shared Function StrLikeBinary(ByVal Source As String, ByVal Pattern As String) As Boolean
-            Return StrLike(Source, Pattern, CompareMethod.Binary)
+            'Match Source to Pattern using "?*#[!a-g]" pattern matching characters
+            Dim SourceIndex As Integer
+            Dim PatternIndex As Integer
+            Dim SourceEndIndex As Integer
+            Dim PatternEndIndex As Integer
+            Dim p As Char
+            Dim s As Char
+            Dim InsideBracket As Boolean
+            Dim SeenHyphen As Boolean
+            Dim StartRangeChar As Char
+            Dim EndRangeChar As Char
+            Dim Match As Boolean
+            Dim SeenLiteral As Boolean
+            Dim SeenNot As Boolean
+            Dim Skip As Integer
+            Const NullChar As Char = Strings.ChrW(0)
+            Dim LiteralIsRangeEnd As Boolean = False
+
+            '        Options = CompareOptions.Ordinal
+
+            If Pattern Is Nothing Then
+                PatternEndIndex = 0
+            Else
+                PatternEndIndex = Pattern.Length
+            End If
+
+            If Source Is Nothing Then
+                SourceEndIndex = 0
+            Else
+                SourceEndIndex = Source.Length
+            End If
+
+            If SourceIndex < SourceEndIndex Then
+                s = Source.Chars(SourceIndex)
+            End If
+
+            Do While PatternIndex < PatternEndIndex
+                p = Pattern.Chars(PatternIndex)
+
+                If p = "*"c AndAlso (Not InsideBracket) Then        'If Then Else has faster performance the Select Case
+                    'Determine how many source chars to skip
+                    Skip = AsteriskSkip(Pattern.Substring(PatternIndex + 1), Source.Substring(SourceIndex), SourceEndIndex - SourceIndex, CompareMethod.Binary, CultureInfo.InvariantCulture.CompareInfo)
+
+                    If Skip < 0 Then
+                        Return False
+                    ElseIf Skip > 0 Then
+                        SourceIndex += Skip
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        End If
+                    End If
+
+                ElseIf p = "?"c AndAlso (Not InsideBracket) Then
+                    'Match any character
+                    SourceIndex = SourceIndex + 1
+                    If SourceIndex < SourceEndIndex Then
+                        s = Source.Chars(SourceIndex)
+                    End If
+
+                ElseIf p = "#"c AndAlso (Not InsideBracket) Then
+                    If Not System.Char.IsDigit(s) Then
+                        Exit Do
+                    End If
+                    SourceIndex = SourceIndex + 1
+                    If SourceIndex < SourceEndIndex Then
+                        s = Source.Chars(SourceIndex)
+                    End If
+
+                ElseIf p = "-"c AndAlso _
+                        (InsideBracket AndAlso SeenLiteral AndAlso (Not LiteralIsRangeEnd) AndAlso (Not SeenHyphen)) AndAlso _
+                        (((PatternIndex + 1) >= PatternEndIndex) OrElse (Pattern.Chars(PatternIndex + 1) <> "]"c)) Then
+
+                    SeenHyphen = True
+
+                ElseIf p = "!"c AndAlso _
+                        (InsideBracket AndAlso (Not SeenNot)) Then
+
+                    SeenNot = True
+                    Match = True
+
+                ElseIf p = "["c AndAlso (Not InsideBracket) Then
+                    InsideBracket = True
+                    StartRangeChar = NullChar
+                    EndRangeChar = NullChar
+                    SeenLiteral = False
+
+                ElseIf p = "]"c AndAlso InsideBracket Then
+                    InsideBracket = False
+
+                    If SeenLiteral Then
+                        If Match Then
+                            SourceIndex += 1
+                            If SourceIndex < SourceEndIndex Then
+                                s = Source.Chars(SourceIndex)
+                            End If
+                        Else
+                            Exit Do
+                        End If
+                    ElseIf SeenHyphen Then
+                        If Not Match Then
+                            Exit Do
+                        End If
+                    ElseIf SeenNot Then
+                        '[!] should be matched to literal ! same as if outside brackets
+                        If "!"c <> s Then
+                            Exit Do
+                        End If
+                        SourceIndex += 1
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        End If
+                    End If
+
+                    Match = False
+                    SeenLiteral = False
+                    SeenNot = False
+                    SeenHyphen = False
+
+                Else
+                    'Literal character
+                    SeenLiteral = True
+                    LiteralIsRangeEnd = False
+
+                    If InsideBracket Then
+                        If SeenHyphen Then
+                            SeenHyphen = False
+                            LiteralIsRangeEnd = True
+                            EndRangeChar = p
+
+                            If StartRangeChar > EndRangeChar Then
+                                Throw New InvalidOperationException("Pattern string is not valid.")
+                                'Throw VbMakeException(vbErrors.BadPatStr)
+                            ElseIf (SeenNot AndAlso Match) OrElse (Not SeenNot AndAlso Not Match) Then
+                                'Calls to ci.Compare are expensive, avoid them for good performance
+                                Match = (s > StartRangeChar) AndAlso (s <= EndRangeChar)
+
+                                If SeenNot Then
+                                    Match = Not Match
+                                End If
+                            End If
+                        Else
+                            StartRangeChar = p
+
+                            'This compare handles non range chars such as the "abc" and "uvw" 
+                            'and the first char of a range such as "d" in "[abcd-tuvw]".
+                            Match = StrLikeCompareBinary(SeenNot, Match, p, s)
+                        End If
+                    Else
+                        If p <> s AndAlso Not SeenNot Then
+                            Exit Do
+                        End If
+
+                        SeenNot = False
+                        SourceIndex += 1
+
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        ElseIf SourceIndex > SourceEndIndex Then
+                            Return False
+                        End If
+                    End If
+                End If
+
+                PatternIndex += 1
+            Loop
+
+            If InsideBracket Then
+                If SourceEndIndex = 0 Then
+                    Return False
+                Else
+                    Throw New ArgumentException(string.Format("Argument '{0}' is not a valid value", "Pattern"))
+                End If
+            Else
+                Return (PatternIndex = PatternEndIndex) AndAlso (SourceIndex = SourceEndIndex)
+            End If
         End Function
+
         Public Shared Function StrLikeText(ByVal Source As String, ByVal Pattern As String) As Boolean
-            Return StrLike(Source, Pattern, CompareMethod.Text)
+            'Match Source to Pattern using "?*#[!a-g]" pattern matching characters
+            Dim SourceIndex As Integer
+            Dim PatternIndex As Integer
+            Dim SourceEndIndex As Integer
+            Dim PatternEndIndex As Integer
+            Dim p As Char
+            Dim s As Char
+            Dim InsideBracket As Boolean
+            Dim SeenHyphen As Boolean
+            Dim StartRangeChar As Char
+            Dim EndRangeChar As Char
+            Dim Match As Boolean
+            Dim SeenLiteral As Boolean
+            Dim SeenNot As Boolean
+            Dim Skip As Integer
+            Dim Options As CompareOptions
+            Dim ci As CompareInfo
+            Const NullChar As Char = Strings.ChrW(0)
+            Dim LiteralIsRangeEnd As Boolean = False
+
+            If Pattern Is Nothing Then
+                PatternEndIndex = 0
+            Else
+                PatternEndIndex = Pattern.Length
+            End If
+
+            If Source Is Nothing Then
+                SourceEndIndex = 0
+            Else
+                SourceEndIndex = Source.Length
+            End If
+
+            If SourceIndex < SourceEndIndex Then
+                s = Source.Chars(SourceIndex)
+            End If
+
+            ci = System.Threading.Thread.CurrentThread.CurrentCulture.CompareInfo
+            Options = CompareOptions.IgnoreCase Or _
+                      CompareOptions.IgnoreWidth Or _
+                      CompareOptions.IgnoreNonSpace Or _
+                      CompareOptions.IgnoreKanaType
+
+            Do While PatternIndex < PatternEndIndex
+                p = Pattern.Chars(PatternIndex)
+
+                If p = "*"c AndAlso (Not InsideBracket) Then        'If Then Else has faster performance the Select Case
+                    'Determine how many source chars to skip
+                    Skip = AsteriskSkip(Pattern.Substring(PatternIndex + 1), Source.Substring(SourceIndex), SourceEndIndex - SourceIndex, CompareMethod.Text, ci)
+
+                    If Skip < 0 Then
+                        Return False
+                    ElseIf Skip > 0 Then
+                        SourceIndex += Skip
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        End If
+                    End If
+
+                ElseIf p = "?"c AndAlso (Not InsideBracket) Then
+                    'Match any character
+                    SourceIndex = SourceIndex + 1
+                    If SourceIndex < SourceEndIndex Then
+                        s = Source.Chars(SourceIndex)
+                    End If
+
+                ElseIf p = "#"c AndAlso (Not InsideBracket) Then
+                    If Not System.Char.IsDigit(s) Then
+                        Exit Do
+                    End If
+                    SourceIndex = SourceIndex + 1
+                    If SourceIndex < SourceEndIndex Then
+                        s = Source.Chars(SourceIndex)
+                    End If
+
+                ElseIf p = "-"c AndAlso _
+                        (InsideBracket AndAlso SeenLiteral AndAlso (Not LiteralIsRangeEnd) AndAlso (Not SeenHyphen)) AndAlso _
+                        (((PatternIndex + 1) >= PatternEndIndex) OrElse (Pattern.Chars(PatternIndex + 1) <> "]"c)) Then
+
+                    SeenHyphen = True
+
+                ElseIf p = "!"c AndAlso _
+                        (InsideBracket AndAlso Not SeenNot) Then
+                    SeenNot = True
+                    Match = True
+
+                ElseIf p = "["c AndAlso (Not InsideBracket) Then
+                    InsideBracket = True
+                    StartRangeChar = NullChar
+                    EndRangeChar = NullChar
+                    SeenLiteral = False
+
+                ElseIf p = "]"c AndAlso InsideBracket Then
+                    InsideBracket = False
+
+                    If SeenLiteral Then
+                        If Match Then
+                            SourceIndex += 1
+                            If SourceIndex < SourceEndIndex Then
+                                s = Source.Chars(SourceIndex)
+                            End If
+                        Else
+                            Exit Do
+                        End If
+                    ElseIf SeenHyphen Then
+                        If Not Match Then
+                            Exit Do
+                        End If
+                    ElseIf SeenNot Then
+                        '[!] should be matched to literal ! same as if outside brackets
+                        If (ci.Compare("!", s) <> 0) Then
+                            Exit Do
+                        End If
+                        SourceIndex += 1
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        End If
+                    End If
+
+                    Match = False
+                    SeenLiteral = False
+                    SeenNot = False
+                    SeenHyphen = False
+
+                Else
+                    'Literal character
+                    SeenLiteral = True
+                    LiteralIsRangeEnd = False
+
+                    If InsideBracket Then
+                        If SeenHyphen Then
+                            SeenHyphen = False
+                            LiteralIsRangeEnd = True
+                            EndRangeChar = p
+
+                            If StartRangeChar > EndRangeChar Then
+                                Throw New InvalidOperationException("Pattern string is not valid.") 
+                                'Throw VbMakeException(vbErrors.BadPatStr)
+                            ElseIf (SeenNot AndAlso Match) OrElse (Not SeenNot AndAlso Not Match) Then
+                                'Calls to ci.Compare are expensive, avoid them for good performance
+                                If Options = CompareOptions.Ordinal Then
+                                    Match = (s > StartRangeChar) AndAlso (s <= EndRangeChar)
+                                Else
+                                    Match = (ci.Compare(StartRangeChar, s, Options) < 0) AndAlso (ci.Compare(EndRangeChar, s, Options) >= 0)
+                                End If
+
+                                If SeenNot Then
+                                    Match = Not Match
+                                End If
+                            End If
+                        Else
+                            StartRangeChar = p
+
+                            'This compare handles non range chars such as the "abc" and "uvw" 
+                            'and the first char of a range such as "d" in "[abcd-tuvw]".
+                            Match = StrLikeCompare(ci, SeenNot, Match, p, s, Options)
+                        End If
+                    Else
+                        If Options = CompareOptions.Ordinal Then
+                            If p <> s AndAlso Not SeenNot Then
+                                Exit Do
+                            End If
+                        Else
+                            ' Slurp up the diacritical marks, if any (both non-spacing marks and modifier symbols)
+                            ' Note that typically, we'll only have at most one diacritical mark.  Therefore, I'm not
+                            ' using StringBuilder here, since the minimal overhead of appending a character doesn't
+                            ' justify invoking a couple of instances of StringBuilder. .
+                            Dim pstr As String = p
+                            Dim sstr As String = s
+                            Do While PatternIndex + 1 < PatternEndIndex AndAlso _
+                                    (UnicodeCategory.ModifierSymbol = Char.GetUnicodeCategory(Pattern.Chars(PatternIndex + 1)) OrElse _
+                                    UnicodeCategory.NonSpacingMark = Char.GetUnicodeCategory(Pattern.Chars(PatternIndex + 1)))
+                                pstr = pstr & Pattern.Chars(PatternIndex + 1)
+                                PatternIndex = PatternIndex + 1
+                            Loop
+                            Do While SourceIndex + 1 < SourceEndIndex AndAlso _
+                                    (UnicodeCategory.ModifierSymbol = Char.GetUnicodeCategory(Source.Chars(SourceIndex + 1)) OrElse _
+                                    UnicodeCategory.NonSpacingMark = Char.GetUnicodeCategory(Source.Chars(SourceIndex + 1)))
+                                sstr = sstr & Source.Chars(SourceIndex + 1)
+                                SourceIndex = SourceIndex + 1
+                            Loop
+
+                            If (ci.Compare(pstr, sstr, (CompareOptions.IgnoreCase Or CompareOptions.IgnoreWidth Or CompareOptions.IgnoreKanaType)) <> 0) AndAlso Not SeenNot Then
+                                Exit Do
+                            End If
+                        End If
+
+                        SeenNot = False
+                        SourceIndex += 1
+
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        ElseIf SourceIndex > SourceEndIndex Then
+                            Return False
+                        End If
+                    End If
+                End If
+
+                PatternIndex += 1
+            Loop
+
+            If InsideBracket Then
+                If SourceEndIndex = 0 Then
+                    Return False
+                Else
+                    Throw New ArgumentException(string.Format("Argument '{0}' is not a valid value", "Pattern"))
+                End If
+            Else
+                Return (PatternIndex = PatternEndIndex) AndAlso (SourceIndex = SourceEndIndex)
+            End If
         End Function
+
+        Private Shared Function StrLikeCompareBinary(ByVal SeenNot As Boolean, ByVal Match As Boolean, ByVal p As Char, ByVal s As Char) As Boolean
+            If SeenNot AndAlso Match Then
+                Return p <> s
+            ElseIf Not SeenNot AndAlso Not Match Then
+                Return p = s
+            Else
+                Return Match
+            End If
+        End Function
+
+        Private Shared Function StrLikeCompare(ByVal ci As CompareInfo, ByVal SeenNot As Boolean, ByVal Match As Boolean, ByVal p As Char, ByVal s As Char, ByVal Options As CompareOptions) As Boolean
+            If SeenNot AndAlso Match Then
+                If Options = CompareOptions.Ordinal Then
+                    Return p <> s
+                Else
+                    Return Not (ci.Compare(p, s, Options) = 0)
+                End If
+            ElseIf Not SeenNot AndAlso Not Match Then
+                If Options = CompareOptions.Ordinal Then
+                    Return p = s
+                Else
+                    Return (ci.Compare(p, s, Options) = 0)
+                End If
+            Else
+                Return Match
+            End If
+        End Function
+
+        Private Shared Function AsteriskSkip(ByVal Pattern As String, ByVal Source As String, ByVal SourceEndIndex As Integer, _
+            ByVal CompareOption As CompareMethod, ByVal ci As CompareInfo) As Integer
+
+            'Returns the number of source characters to skip over to handle an asterisk in the pattern. 
+            'When there's only a single asterisk in the pattern, it computes how many pattern equivalent chars  
+            'follow the *: [a-z], [abcde], ?, # each count as one char.
+            'Pattern contains the substring following the *
+            'Source contains the substring not yet matched.
+
+            Dim p As Char
+            Dim SeenLiteral As Boolean
+            Dim SeenSpecial As Boolean   'Remembers if we've seen #, ?, [abd-eg], or ! when they have their special meanings
+            Dim InsideBracket As Boolean
+            Dim Count As Integer
+            Dim PatternEndIndex As Integer
+            Dim PatternIndex As Integer
+            Dim TruncatedPattern As String
+            Dim Options As CompareOptions
+
+            PatternEndIndex = Strings.Len(Pattern)
+
+            'Determine how many pattern equivalent chars follow the *, and if there are multiple *s
+            '[a-z], [abcde] each count as one char.
+            Do While PatternIndex < PatternEndIndex
+                p = Pattern.Chars(PatternIndex)
+
+                Select Case p
+                    Case "*"c
+                        If Count > 0 Then
+                            'We found multiple asterisks with an intervening pattern
+                            If SeenSpecial Then
+                                'Pattern uses special characters which means we can't compute easily how far to skip. 
+                                Count = MultipleAsteriskSkip(Pattern, Source, Count, CompareOption)
+                                Return SourceEndIndex - Count
+                            Else
+                                'Pattern uses only literals, so we can directly search for the pattern in the source
+                                'TODO: Handle cases where pattern could be replicated in the source.
+                                TruncatedPattern = Pattern.Substring(0, PatternIndex)    'Remove the second * and everything trailing  
+
+                                If CompareOption = CompareMethod.Binary Then
+                                    Options = CompareOptions.Ordinal
+                                Else
+                                    Options = CompareOptions.IgnoreCase Or CompareOptions.IgnoreWidth Or CompareOptions.IgnoreNonSpace Or CompareOptions.IgnoreKanaType
+                                End If
+
+                                'Count = Source.LastIndexOf(TruncatedPattern)
+                                Count = ci.LastIndexOf(Source, TruncatedPattern, Options)
+                                Return Count
+                            End If
+
+                        Else
+                            'Do nothing, which colalesces multiple asterisks together
+                        End If
+
+                    Case "-"c
+                        If Pattern.Chars(PatternIndex + 1) = "]"c Then
+                            SeenLiteral = True
+                        End If
+
+                    Case "!"c
+                        If Pattern.Chars(PatternIndex + 1) = "]"c Then
+                            SeenLiteral = True
+                        Else
+                            SeenSpecial = True
+                        End If
+
+                    Case "["c
+                        If InsideBracket Then
+                            SeenLiteral = True
+                        Else
+                            InsideBracket = True
+                        End If
+
+                    Case "]"c
+                        If SeenLiteral OrElse Not InsideBracket Then
+                            Count += 1
+                            SeenSpecial = True
+                        End If
+                        SeenLiteral = False
+                        InsideBracket = False
+
+                    Case "?"c, "#"c
+                        If InsideBracket Then
+                            SeenLiteral = True
+                        Else
+                            Count += 1
+                            SeenSpecial = True
+                        End If
+
+                    Case Else
+                        If InsideBracket Then
+                            SeenLiteral = True
+                        Else
+                            Count += 1
+                        End If
+                End Select
+
+                PatternIndex += 1
+            Loop
+
+            Return SourceEndIndex - Count
+        End Function
+
+        Private Shared Function MultipleAsteriskSkip(ByVal Pattern As String, ByVal Source As String, ByVal Count As Integer, ByVal CompareOption As CompareMethod) As Integer
+            'Multiple asterisks with intervening chars were found in the pattern, such as "*<chars>*".
+            'Use a recursive approach to determine how many source chars to skip.
+            'Start near the end of Source and move backwards one char at a time until a match is found or we reach start of Source.
+
+            Dim SourceEndIndex As Integer
+            Dim NewSource As String
+            Dim Result As Boolean
+
+            SourceEndIndex = Strings.Len(Source)
+
+            Do While Count < SourceEndIndex
+                NewSource = Source.Substring(SourceEndIndex - Count)
+
+                Try
+                    Result = StrLike(NewSource, Pattern, CompareOption)
+                Catch ex As StackOverflowException
+                    Throw ex
+                Catch ex As OutOfMemoryException
+                    Throw ex
+                Catch ex As System.Threading.ThreadAbortException
+                    Throw ex
+                Catch
+                    Result = False
+                End Try
+
+                If Result Then
+                    Exit Do
+                End If
+
+                Count += 1
+            Loop
+
+            Return Count
+        End Function
+#End Region ' BACKWARDS COMPATIBILITY
+
+
+        Public Shared Sub MidStmtStr(ByRef sDest As String, ByVal StartPosition As Integer, ByVal MaxInsertLength As Integer, ByVal sInsert As String)
+            Dim DestLength As Integer
+            Dim InsertLength As Integer
+            Dim EndSegmentLength As Integer
+
+            If sDest Is Nothing Then
+                'DestLength = 0
+            Else
+                DestLength = sDest.Length
+            End If
+
+            If sInsert Is Nothing Then
+                'InsertLength = 0
+            Else
+                InsertLength = sInsert.Length
+            End If
+
+            'Zero base the index
+            StartPosition -= 1
+
+            If StartPosition < 0 OrElse StartPosition >= DestLength Then
+                Throw New ArgumentException(string.Format("Argument '{0}' is not a valid value", "Start"))
+            End If
+
+            If MaxInsertLength < 0 Then
+                Throw New ArgumentException(string.Format("Argument '{0}' is not a valid value", "Length"))
+            End If
+
+            '  first, limit the length of the source string
+            '  to lenChange
+
+            If (InsertLength > MaxInsertLength) Then
+                InsertLength = MaxInsertLength
+            End If
+
+            '  second, limit the length to the available space
+            '  in the destination string
+
+            If (InsertLength > DestLength - StartPosition) Then
+                InsertLength = DestLength - StartPosition
+            End If
+
+            If InsertLength = 0 Then
+                'Destination string remains unchanged
+                Exit Sub
+            End If
+
+            'This looks a bit complex for removing and inserting strings
+            'but when manipulating long strings, it should provide
+            'better performance because of fewer memcpys
+
+            Dim sb As StringBuilder
+
+            sb = New StringBuilder(DestLength)
+
+            If StartPosition > 0 Then
+                'Append first part of destination string
+                sb.Append(sDest, 0, StartPosition)
+            End If
+
+            'Append InsertString
+            sb.Append(sInsert, 0, InsertLength)
+            EndSegmentLength = DestLength - (StartPosition + InsertLength)
+
+            If EndSegmentLength > 0 Then
+                'Append remainder of destination string
+                sb.Append(sDest, StartPosition + InsertLength, EndSegmentLength)
+            End If
+
+            sDest = sb.ToString()
+        End Sub
+
     End Class
+
+#End Region
+
 End Namespace
+
