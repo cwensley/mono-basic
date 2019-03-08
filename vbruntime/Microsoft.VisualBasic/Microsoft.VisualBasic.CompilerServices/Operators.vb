@@ -30,6 +30,7 @@
 
 Imports System
 Imports System.Reflection
+Imports System.Globalization
 Namespace Microsoft.VisualBasic.CompilerServices
     <System.ComponentModel.EditorBrowsable(ComponentModel.EditorBrowsableState.Never)> _
     Public NotInheritable Class Operators
@@ -1112,25 +1113,631 @@ Namespace Microsoft.VisualBasic.CompilerServices
             Throw New InvalidCastException("Operator '<<' is not defined for type '" + tcOperand.ToString() + "'.")
         End Function
 
+#If Not TELESTO Then
+
+        ' - Some odd refactoring happened here that we must live with.  We no longer emit runtime helper calls to this function from the
+        'compiler--we use the functions defined in LikeOperator.vb  But we have to hang on to this because an Everett app running on a Whidbey+
+        'runtime could try to call this.  There was a TODO to remove this during Whidbey but it's just as well they didn't because it would have toasted
+        'Everett apps.
         Public Shared Function LikeObject(ByVal Source As Object, ByVal Pattern As Object, ByVal CompareOption As CompareMethod) As Object
-            Try
-                Select Case GetTypeCode(Source)
-                    Case TypeCode.String
-                        Return LikeString(Source.ToString(), Pattern.ToString(), CompareOption)
-                    Case Else
-                        Dim ret As Object = Nothing
-                        If (InvokeBinaryOperator(Source, Pattern, "op_Like", ret)) Then
-                            Return ret
-                        End If
-                End Select
-            Catch ex As Exception
-            End Try
-            Throw New InvalidCastException("Operator 'Like' is not defined for type '" + Source.GetType().ToString() + "' and type '" + Pattern.GetType().ToString() + "'.")
+
+            Dim conv1, conv2 As IConvertible
+            Dim tc1, tc2 As TypeCode
+
+            conv1 = TryCast(Source, IConvertible)
+            If conv1 Is Nothing Then
+                If Source Is Nothing Then
+                    tc1 = TypeCode.Empty
+                Else
+                    tc1 = TypeCode.Object
+                End If
+            Else
+                tc1 = conv1.GetTypeCode()
+            End If
+
+            conv2 = TryCast(Pattern, IConvertible)
+            If conv2 Is Nothing Then
+                If Pattern Is Nothing Then
+                    tc2 = TypeCode.Empty
+                Else
+                    tc2 = TypeCode.Object
+                End If
+            Else
+                tc2 = conv2.GetTypeCode()
+            End If
+
+            'Special cases for Char()
+            If (tc1 = TypeCode.Object) AndAlso (TypeOf Source Is Char()) Then
+                tc1 = TypeCode.String
+            End If
+
+            If (tc2 = TypeCode.Object) AndAlso (TypeOf Pattern Is Char()) Then
+                tc2 = TypeCode.String
+            End If
+
+            If tc1 = TypeCode.Object OrElse tc2 = TypeCode.Object Then
+                Dim ret As Object = Nothing
+                If (InvokeBinaryOperator(Source, Pattern, "op_Like", ret)) Then
+                  Return ret
+                End If
+                'Return InvokeUserDefinedOperator(UserDefinedOperator.Like, Source, Pattern)
+            End If
+
+            Return LikeString(CStr(Source), CStr(Pattern), CompareOption)
         End Function
 
+        'UNDONE: can't the code generator just call the right compare version?  The can remove this function.
         Public Shared Function LikeString(ByVal Source As String, ByVal Pattern As String, ByVal CompareOption As CompareMethod) As Boolean
-            Return StringType.StrLike(Source, Pattern, CompareOption)
+            If CompareOption = CompareMethod.Binary Then
+                Return LikeStringBinary(Source, Pattern)
+            Else
+                Return LikeStringText(Source, Pattern)
+            End If
         End Function
+
+        Private Shared Function LikeStringBinary(ByVal Source As String, ByVal Pattern As String) As Boolean
+            'Match Source to Pattern using "?*#[!a-g]" pattern matching characters
+            Dim SourceIndex As Integer
+            Dim PatternIndex As Integer
+            Dim SourceEndIndex As Integer
+            Dim PatternEndIndex As Integer
+            Dim p As Char
+            Dim s As Char
+            Dim InsideBracket As Boolean
+            Dim SeenHyphen As Boolean
+            Dim StartRangeChar As Char
+            Dim EndRangeChar As Char
+            Dim Match As Boolean
+            Dim SeenLiteral As Boolean
+            Dim SeenNot As Boolean
+            Dim Skip As Integer
+            Const NullChar As Char = Strings.ChrW(0)
+            Dim LiteralIsRangeEnd As Boolean = False
+
+            '        Options = CompareOptions.Ordinal
+
+            If Pattern Is Nothing Then
+                PatternEndIndex = 0
+            Else
+                PatternEndIndex = Pattern.Length
+            End If
+
+            If Source Is Nothing Then
+                SourceEndIndex = 0
+            Else
+                SourceEndIndex = Source.Length
+            End If
+
+            If SourceIndex < SourceEndIndex Then
+                s = Source.Chars(SourceIndex)
+            End If
+
+            Do While PatternIndex < PatternEndIndex
+                p = Pattern.Chars(PatternIndex)
+
+                If p = "*"c AndAlso (Not InsideBracket) Then        'If Then Else has faster performance the Select Case
+                    'Determine how many source chars to skip
+                    Skip = AsteriskSkip(Pattern.Substring(PatternIndex + 1), Source.Substring(SourceIndex), SourceEndIndex - SourceIndex, CompareMethod.Binary, CultureInfo.InvariantCulture.CompareInfo)
+                    'Skip = AsteriskSkip(Pattern.Substring(PatternIndex + 1), Source.Substring(SourceIndex), SourceEndIndex - SourceIndex, CompareMethod.Binary, m_InvariantCompareInfo)
+
+                    If Skip < 0 Then
+                        Return False
+                    ElseIf Skip > 0 Then
+                        SourceIndex += Skip
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        End If
+                    End If
+
+                ElseIf p = "?"c AndAlso (Not InsideBracket) Then
+                    'Match any character
+                    SourceIndex = SourceIndex + 1
+                    If SourceIndex < SourceEndIndex Then
+                        s = Source.Chars(SourceIndex)
+                    End If
+
+                ElseIf p = "#"c AndAlso (Not InsideBracket) Then
+                    If Not System.Char.IsDigit(s) Then
+                        Exit Do
+                    End If
+                    SourceIndex = SourceIndex + 1
+                    If SourceIndex < SourceEndIndex Then
+                        s = Source.Chars(SourceIndex)
+                    End If
+
+                ElseIf p = "-"c AndAlso _
+                        (InsideBracket AndAlso SeenLiteral AndAlso (Not LiteralIsRangeEnd) AndAlso (Not SeenHyphen)) AndAlso _
+                        (((PatternIndex + 1) >= PatternEndIndex) OrElse (Pattern.Chars(PatternIndex + 1) <> "]"c)) Then
+
+                    SeenHyphen = True
+
+                ElseIf p = "!"c AndAlso _
+                        (InsideBracket AndAlso (Not SeenNot)) Then
+
+                    SeenNot = True
+                    Match = True
+
+                ElseIf p = "["c AndAlso (Not InsideBracket) Then
+                    InsideBracket = True
+                    StartRangeChar = NullChar
+                    EndRangeChar = NullChar
+                    SeenLiteral = False
+
+                ElseIf p = "]"c AndAlso InsideBracket Then
+                    InsideBracket = False
+
+                    If SeenLiteral Then
+                        If Match Then
+                            SourceIndex += 1
+                            If SourceIndex < SourceEndIndex Then
+                                s = Source.Chars(SourceIndex)
+                            End If
+                        Else
+                            Exit Do
+                        End If
+                    ElseIf SeenHyphen Then
+                        If Not Match Then
+                            Exit Do
+                        End If
+                    ElseIf SeenNot Then
+                        '[!] should be matched to literal ! same as if outside brackets
+                        If "!"c <> s Then
+                            Exit Do
+                        End If
+                        SourceIndex += 1
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        End If
+                    End If
+
+                    Match = False
+                    SeenLiteral = False
+                    SeenNot = False
+                    SeenHyphen = False
+
+                Else
+                    'Literal character
+                    SeenLiteral = True
+                    LiteralIsRangeEnd = False
+
+                    If InsideBracket Then
+                        If SeenHyphen Then
+                            SeenHyphen = False
+                            LiteralIsRangeEnd = True
+                            EndRangeChar = p
+
+                            If StartRangeChar > EndRangeChar Then
+                                Throw New InvalidOperationException("Pattern string is not valid.")
+                                'Throw VbMakeException(vbErrors.BadPatStr)
+                            ElseIf (SeenNot AndAlso Match) OrElse (Not SeenNot AndAlso Not Match) Then
+                                'Calls to ci.Compare are expensive, avoid them for good performance
+                                Match = (s > StartRangeChar) AndAlso (s <= EndRangeChar)
+
+                                If SeenNot Then
+                                    Match = Not Match
+                                End If
+                            End If
+                        Else
+                            StartRangeChar = p
+
+                            'This compare handles non range chars such as the "abc" and "uvw" 
+                            'and the first char of a range such as "d" in "[abcd-tuvw]".
+                            Match = LikeStringCompareBinary(SeenNot, Match, p, s)
+                        End If
+                    Else
+                        If p <> s AndAlso Not SeenNot Then
+                            Exit Do
+                        End If
+
+                        SeenNot = False
+                        SourceIndex += 1
+
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        ElseIf SourceIndex > SourceEndIndex Then
+                            Return False
+                        End If
+                    End If
+                End If
+
+                PatternIndex += 1
+            Loop
+
+            If InsideBracket Then
+                If SourceEndIndex = 0 Then
+                    Return False
+                Else
+                    Throw New ArgumentException(string.Format("Argument '{0}' is not a valid value", "Pattern"))
+                    'Throw New ArgumentException(GetResourceString(ResID.Argument_InvalidValue1, "Pattern"))
+                End If
+            Else
+                Return (PatternIndex = PatternEndIndex) AndAlso (SourceIndex = SourceEndIndex)
+            End If
+        End Function
+
+        Private Shared Function LikeStringText(ByVal Source As String, ByVal Pattern As String) As Boolean
+            'Match Source to Pattern using "?*#[!a-g]" pattern matching characters
+            Dim SourceIndex As Integer
+            Dim PatternIndex As Integer
+            Dim SourceEndIndex As Integer
+            Dim PatternEndIndex As Integer
+            Dim p As Char
+            Dim s As Char
+            Dim InsideBracket As Boolean
+            Dim SeenHyphen As Boolean
+            Dim StartRangeChar As Char
+            Dim EndRangeChar As Char
+            Dim Match As Boolean
+            Dim SeenLiteral As Boolean
+            Dim SeenNot As Boolean
+            Dim Skip As Integer
+            Dim Options As CompareOptions
+            Dim ci As CompareInfo
+            Const NullChar As Char = Strings.ChrW(0)
+            Dim LiteralIsRangeEnd As Boolean = False
+
+            If Pattern Is Nothing Then
+                PatternEndIndex = 0
+            Else
+                PatternEndIndex = Pattern.Length
+            End If
+
+            If Source Is Nothing Then
+                SourceEndIndex = 0
+            Else
+                SourceEndIndex = Source.Length
+            End If
+
+            If SourceIndex < SourceEndIndex Then
+                s = Source.Chars(SourceIndex)
+            End If
+
+            ci = System.Threading.Thread.CurrentThread.CurrentCulture.CompareInfo
+            'ci = GetCultureInfo().CompareInfo
+            Options = CompareOptions.IgnoreCase Or _
+                      CompareOptions.IgnoreWidth Or _
+                      CompareOptions.IgnoreNonSpace Or _
+                      CompareOptions.IgnoreKanaType
+
+            Do While PatternIndex < PatternEndIndex
+                p = Pattern.Chars(PatternIndex)
+
+                If p = "*"c AndAlso (Not InsideBracket) Then        'If Then Else has faster performance the Select Case
+                    'Determine how many source chars to skip
+                    Skip = AsteriskSkip(Pattern.Substring(PatternIndex + 1), Source.Substring(SourceIndex), SourceEndIndex - SourceIndex, CompareMethod.Text, ci)
+
+                    If Skip < 0 Then
+                        Return False
+                    ElseIf Skip > 0 Then
+                        SourceIndex += Skip
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        End If
+                    End If
+
+                ElseIf p = "?"c AndAlso (Not InsideBracket) Then
+                    'Match any character
+                    SourceIndex = SourceIndex + 1
+                    If SourceIndex < SourceEndIndex Then
+                        s = Source.Chars(SourceIndex)
+                    End If
+
+                ElseIf p = "#"c AndAlso (Not InsideBracket) Then
+                    If Not System.Char.IsDigit(s) Then
+                        Exit Do
+                    End If
+                    SourceIndex = SourceIndex + 1
+                    If SourceIndex < SourceEndIndex Then
+                        s = Source.Chars(SourceIndex)
+                    End If
+
+                ElseIf p = "-"c AndAlso _
+                        (InsideBracket AndAlso SeenLiteral AndAlso (Not LiteralIsRangeEnd) AndAlso (Not SeenHyphen)) AndAlso _
+                        (((PatternIndex + 1) >= PatternEndIndex) OrElse (Pattern.Chars(PatternIndex + 1) <> "]"c)) Then
+
+                    SeenHyphen = True
+
+                ElseIf p = "!"c AndAlso _
+                        (InsideBracket AndAlso Not SeenNot) Then
+                    SeenNot = True
+                    Match = True
+
+                ElseIf p = "["c AndAlso (Not InsideBracket) Then
+                    InsideBracket = True
+                    StartRangeChar = NullChar
+                    EndRangeChar = NullChar
+                    SeenLiteral = False
+
+                ElseIf p = "]"c AndAlso InsideBracket Then
+                    InsideBracket = False
+
+                    If SeenLiteral Then
+                        If Match Then
+                            SourceIndex += 1
+                            If SourceIndex < SourceEndIndex Then
+                                s = Source.Chars(SourceIndex)
+                            End If
+                        Else
+                            Exit Do
+                        End If
+                    ElseIf SeenHyphen Then
+                        If Not Match Then
+                            Exit Do
+                        End If
+                    ElseIf SeenNot Then
+                        '[!] should be matched to literal ! same as if outside brackets
+                        If (ci.Compare("!", s) <> 0) Then
+                            Exit Do
+                        End If
+                        SourceIndex += 1
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        End If
+                    End If
+
+                    Match = False
+                    SeenLiteral = False
+                    SeenNot = False
+                    SeenHyphen = False
+
+                Else
+                    'Literal character
+                    SeenLiteral = True
+                    LiteralIsRangeEnd = False
+
+                    If InsideBracket Then
+                        If SeenHyphen Then
+                            SeenHyphen = False
+                            LiteralIsRangeEnd = True
+                            EndRangeChar = p
+
+                            If StartRangeChar > EndRangeChar Then
+                                Throw New InvalidOperationException("Pattern string is not valid.") 
+                                'Throw VbMakeException(vbErrors.BadPatStr)
+                            ElseIf (SeenNot AndAlso Match) OrElse (Not SeenNot AndAlso Not Match) Then
+                                'Calls to ci.Compare are expensive, avoid them for good performance
+                                If Options = CompareOptions.Ordinal Then
+                                    Match = (s > StartRangeChar) AndAlso (s <= EndRangeChar)
+                                Else
+                                    Match = (ci.Compare(StartRangeChar, s, Options) < 0) AndAlso (ci.Compare(EndRangeChar, s, Options) >= 0)
+                                End If
+
+                                If SeenNot Then
+                                    Match = Not Match
+                                End If
+                            End If
+                        Else
+                            StartRangeChar = p
+
+                            'This compare handles non range chars such as the "abc" and "uvw" 
+                            'and the first char of a range such as "d" in "[abcd-tuvw]".
+                            Match = LikeStringCompare(ci, SeenNot, Match, p, s, Options)
+                        End If
+                    Else
+                        If Options = CompareOptions.Ordinal Then
+                            If p <> s AndAlso Not SeenNot Then
+                                Exit Do
+                            End If
+                        Else
+                            ' Slurp up the diacritical marks, if any (both non-spacing marks and modifier symbols)
+                            ' Note that typically, we'll only have at most one diacritical mark.  Therefore, I'm not
+                            ' using StringBuilder here, since the minimal overhead of appending a character doesn't
+                            ' justify invoking a couple of instances of StringBuilder..
+                            Dim pstr As String = p
+                            Dim sstr As String = s
+                            Do While PatternIndex + 1 < PatternEndIndex AndAlso _
+                                    (UnicodeCategory.ModifierSymbol = Char.GetUnicodeCategory(Pattern.Chars(PatternIndex + 1)) OrElse _
+                                    UnicodeCategory.NonSpacingMark = Char.GetUnicodeCategory(Pattern.Chars(PatternIndex + 1)))
+                                pstr = pstr & Pattern.Chars(PatternIndex + 1)
+                                PatternIndex = PatternIndex + 1
+                            Loop
+                            Do While SourceIndex + 1 < SourceEndIndex AndAlso _
+                                    (UnicodeCategory.ModifierSymbol = Char.GetUnicodeCategory(Source.Chars(SourceIndex + 1)) OrElse _
+                                    UnicodeCategory.NonSpacingMark = Char.GetUnicodeCategory(Source.Chars(SourceIndex + 1)))
+                                sstr = sstr & Source.Chars(SourceIndex + 1)
+                                SourceIndex = SourceIndex + 1
+                            Loop
+
+                            If (ci.Compare(pstr, sstr, (CompareOptions.IgnoreCase Or CompareOptions.IgnoreWidth Or CompareOptions.IgnoreKanaType)) <> 0) AndAlso Not SeenNot Then
+                            'If (ci.Compare(pstr, sstr, OptionCompareTextFlags) <> 0) AndAlso Not SeenNot Then
+                                Exit Do
+                            End If
+                        End If
+
+                        SeenNot = False
+                        SourceIndex += 1
+
+                        If SourceIndex < SourceEndIndex Then
+                            s = Source.Chars(SourceIndex)
+                        ElseIf SourceIndex > SourceEndIndex Then
+                            Return False
+                        End If
+                    End If
+                End If
+
+                PatternIndex += 1
+            Loop
+
+            If InsideBracket Then
+                If SourceEndIndex = 0 Then
+                    Return False
+                Else
+                    Throw New ArgumentException(string.Format("Argument '{0}' is not a valid value", "Pattern"))
+                    'Throw New ArgumentException(GetResourceString(ResID.Argument_InvalidValue1, "Pattern"))
+                End If
+            Else
+                Return (PatternIndex = PatternEndIndex) AndAlso (SourceIndex = SourceEndIndex)
+            End If
+        End Function
+
+        Private Shared Function LikeStringCompareBinary(ByVal SeenNot As Boolean, ByVal Match As Boolean, ByVal p As Char, ByVal s As Char) As Boolean
+            If SeenNot AndAlso Match Then
+                Return p <> s
+            ElseIf Not SeenNot AndAlso Not Match Then
+                Return p = s
+            Else
+                Return Match
+            End If
+        End Function
+
+        Private Shared Function LikeStringCompare(ByVal ci As CompareInfo, ByVal SeenNot As Boolean, ByVal Match As Boolean, ByVal p As Char, ByVal s As Char, ByVal Options As CompareOptions) As Boolean
+            If SeenNot AndAlso Match Then
+                If Options = CompareOptions.Ordinal Then
+                    Return p <> s
+                Else
+                    Return Not (ci.Compare(p, s, Options) = 0)
+                End If
+            ElseIf Not SeenNot AndAlso Not Match Then
+                If Options = CompareOptions.Ordinal Then
+                    Return p = s
+                Else
+                    Return (ci.Compare(p, s, Options) = 0)
+                End If
+            Else
+                Return Match
+            End If
+        End Function
+
+        Private Shared Function AsteriskSkip(ByVal Pattern As String, ByVal Source As String, ByVal SourceEndIndex As Integer, _
+            ByVal CompareOption As CompareMethod, ByVal ci As CompareInfo) As Integer
+
+            'Returns the number of source characters to skip over to handle an asterisk in the pattern. 
+            'When there's only a single asterisk in the pattern, it computes how many pattern equivalent chars  
+            'follow the *: [a-z], [abcde], ?, # each count as one char.
+            'Pattern contains the substring following the *
+            'Source contains the substring not yet matched.
+
+            Dim p As Char
+            Dim SeenLiteral As Boolean
+            Dim SeenSpecial As Boolean   'Remembers if we've seen #, ?, [abd-eg], or ! when they have their special meanings
+            Dim InsideBracket As Boolean
+            Dim Count As Integer
+            Dim PatternEndIndex As Integer
+            Dim PatternIndex As Integer
+            Dim TruncatedPattern As String
+            Dim Options As CompareOptions
+
+            PatternEndIndex = Strings.Len(Pattern)
+
+            'Determine how many pattern equivalent chars follow the *, and if there are multiple *s
+            '[a-z], [abcde] each count as one char.
+            Do While PatternIndex < PatternEndIndex
+                p = Pattern.Chars(PatternIndex)
+
+                Select Case p
+                    Case "*"c
+                        If Count > 0 Then
+                            'We found multiple asterisks with an intervening pattern
+                            If SeenSpecial Then
+                                'Pattern uses special characters which means we can't compute easily how far to skip. 
+                                Count = MultipleAsteriskSkip(Pattern, Source, Count, CompareOption)
+                                Return SourceEndIndex - Count
+                            Else
+                                'Pattern uses only literals, so we can directly search for the pattern in the source
+                                'TODO: Handle cases where pattern could be replicated in the source.
+                                TruncatedPattern = Pattern.Substring(0, PatternIndex)    'Remove the second * and everything trailing  
+
+                                If CompareOption = CompareMethod.Binary Then
+                                    Options = CompareOptions.Ordinal
+                                Else
+                                    Options = CompareOptions.IgnoreCase Or CompareOptions.IgnoreWidth Or CompareOptions.IgnoreNonSpace Or CompareOptions.IgnoreKanaType
+                                End If
+
+                                'Count = Source.LastIndexOf(TruncatedPattern)
+                                Count = ci.LastIndexOf(Source, TruncatedPattern, Options)
+                                Return Count
+                            End If
+
+                        Else
+                            'Do nothing, which colalesces multiple asterisks together
+                        End If
+
+                    Case "-"c
+                        If Pattern.Chars(PatternIndex + 1) = "]"c Then
+                            SeenLiteral = True
+                        End If
+
+                    Case "!"c
+                        If Pattern.Chars(PatternIndex + 1) = "]"c Then
+                            SeenLiteral = True
+                        Else
+                            SeenSpecial = True
+                        End If
+
+                    Case "["c
+                        If InsideBracket Then
+                            SeenLiteral = True
+                        Else
+                            InsideBracket = True
+                        End If
+
+                    Case "]"c
+                        If SeenLiteral OrElse Not InsideBracket Then
+                            Count += 1
+                            SeenSpecial = True
+                        End If
+                        SeenLiteral = False
+                        InsideBracket = False
+
+                    Case "?"c, "#"c
+                        If InsideBracket Then
+                            SeenLiteral = True
+                        Else
+                            Count += 1
+                            SeenSpecial = True
+                        End If
+
+                    Case Else
+                        If InsideBracket Then
+                            SeenLiteral = True
+                        Else
+                            Count += 1
+                        End If
+                End Select
+
+                PatternIndex += 1
+            Loop
+
+            Return SourceEndIndex - Count
+        End Function
+
+        Private Shared Function MultipleAsteriskSkip(ByVal Pattern As String, ByVal Source As String, ByVal Count As Integer, ByVal CompareOption As CompareMethod) As Integer
+            'Multiple asterisks with intervening chars were found in the pattern, such as "*<chars>*".
+            'Use a recursive approach to determine how many source chars to skip.
+            'Start near the end of Source and move backwards one char at a time until a match is found or we reach start of Source.
+
+            Dim SourceEndIndex As Integer
+            Dim NewSource As String
+            Dim Result As Boolean
+
+            SourceEndIndex = Strings.Len(Source)
+
+            Do While Count < SourceEndIndex
+                NewSource = Source.Substring(SourceEndIndex - Count)
+
+                Try
+                    Result = LikeString(NewSource, Pattern, CompareOption)
+                Catch ex As StackOverflowException
+                    Throw ex
+                Catch ex As OutOfMemoryException
+                    Throw ex
+                Catch ex As System.Threading.ThreadAbortException
+                    Throw ex
+                Catch
+                    Result = False
+                End Try
+
+                If Result Then
+                    Exit Do
+                End If
+
+                Count += 1
+            Loop
+
+            Return Count
+        End Function
+
+#End If
 
         Public Shared Function ModObject(ByVal Left As Object, ByVal Right As Object) As Object
             If (Left Is Nothing) And (Right Is Nothing) Then
